@@ -26,9 +26,33 @@ module eigsolve_vars
   use cudafor
   use cublas
   use cusolverDn
+  integer                        :: initialized = 0
   type(cublasHandle)             :: cuHandle
   type(cusolverDnHandle)         :: cusolverHandle
   type(cudaEvent)                :: event1, event2, event3
   integer(kind=cuda_stream_kind) :: stream1, stream2, stream3
   integer, device                :: devInfo_d
+
+  contains
+
+    subroutine init_eigsolve_gpu()
+      use cudafor
+      use cublas
+      implicit none
+      integer istat
+      if( initialized == 0 ) then
+         ! Configure shared memory to use 8 byte banks
+         istat = cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte) 
+
+         istat = cublasCreate(cuHandle)
+         istat = cusolverDnCreate(cusolverHandle)
+         istat = cudaStreamCreate(stream1)
+         istat = cudaStreamCreate(stream2)
+         istat = cudaStreamCreate(stream3)
+         istat = cudaEventCreate(event1)
+         istat = cudaEventCreate(event2)
+         initialized = 1
+      endif
+    end subroutine init_eigsolve_gpu
+
 end module eigsolve_vars

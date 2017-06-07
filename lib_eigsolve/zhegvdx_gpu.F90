@@ -25,29 +25,8 @@ module zhegvdx_gpu
   use cudafor
   use cublas
   implicit none
-  integer, save :: initialized = 0
 
   contains
-    subroutine init_eigsolve_gpu()
-      use cudafor
-      use cublas
-      use eigsolve_vars
-      implicit none
-      integer istat
-      if( initialized == 0 ) then
-         ! Configure shared memory to use 8 byte banks
-         istat = cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte) 
-
-         istat = cublasCreate(cuHandle)
-         istat = cusolverDnCreate(cusolverHandle)
-         istat = cudaStreamCreate(stream1)
-         istat = cudaStreamCreate(stream2)
-         istat = cudaStreamCreate(stream3)
-         istat = cudaEventCreate(event1)
-         istat = cudaEventCreate(event2)
-         initialized = 1
-      endif
-    end subroutine init_eigsolve_gpu
 
     ! zhegvdx_gpu
     ! This solver computes eigenvalues and associated eigenvectors over a specified integer range for a
@@ -62,7 +41,7 @@ module zhegvdx_gpu
     !   -  A(lda, N), B(ldb, N) are double-complex matrices on device  with upper triangular portion populated
     !   -  il, iu are integers specifying range of eigenvalues/vectors to compute. Range is [il, iu]
     !   -  work is a double-complex array for complex workspace of length lwork. 
-    !   -  lwork is an integer specifying length of work. lwork >= max((36 + N/64) * N, 64*64 + 65*N)
+    !   -  lwork is an integer specifying length of work. lwork >= max(35 * N, 64*64 + 65*N)
     !   -  rwork is a real(8) array for real workspace of length lrwork. 
     !   -  lrwork is an integer specifying length of rwork. lrwork >= N
     !
@@ -118,8 +97,8 @@ module zhegvdx_gpu
       info = 0
 
       ! Check workspace sizes
-      if (lwork < max((36 + N/64) * N, 64*64 + 65*N)) then
-        print*, "zhegvdx_gpu error: lwork must be at least max((36 + N/64) * N, 64*64 + 65*N)"
+      if (lwork < max(35 * N, 64*64 + 65*N)) then
+        print*, "zhegvdx_gpu error: lwork must be at least max(35 * N, 64*64 + 65*N)"
         info = -1
         return
       else if (lrwork < N) then

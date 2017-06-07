@@ -48,8 +48,8 @@ module zhetrd_gpu
         return
       endif
 
-      if (lwork < (nb+2)*N + N*(N/64 + 1) .and. N > nb) then
-        write(*,*), "Provided work array must be sized (nb+2)*N + N*(N/64 + 1) or greater!"
+      if (lwork < (nb+2)*N .and. N > nb) then
+        write(*,*), "Provided work array must be sized (nb+2)*N or greater!"
         return
       endif
 
