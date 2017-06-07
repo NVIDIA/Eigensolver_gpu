@@ -1,0 +1,251 @@
+!
+! Copyright (c) 2016, NVIDIA CORPORATION. All rights reserved.
+! 
+! 
+! Permission is hereby granted, free of charge, to any person obtaining a
+! copy of this software and associated documentation files (the "Software"),
+! to deal in the Software without restriction, including without limitation
+! the rights to use, copy, modify, merge, publish, distribute, sublicense,
+! and/or sell copies of the Software, and to permit persons to whom the
+! Software is furnished to do so, subject to the following conditions:
+! 
+! The above copyright notice and this permission notice shall be included in
+! all copies or substantial portions of the Software.
+! 
+! THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+! IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+! FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+! THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+! LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+! FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+! DEALINGS IN THE SOFTWARE.
+!
+
+module zheevd_gpu
+  use cudafor
+  use cublas
+  implicit none
+
+  contains
+
+    ! Custom zheevd/x routine
+    subroutine zheevd_gpu(jobz, uplo, il, iu, N, A, lda, Z, ldz, w, work, lwork, rwork, lrwork, &
+                          work_h, lwork_h, rwork_h, lrwork_h, iwork_h, liwork_h, Z_h, ldz_h, w_h, info)
+      use zhetrd_gpu
+      use eigsolve_vars
+      use nvtx_inters
+      implicit none
+      character                                   :: uplo, jobz
+      integer                                     :: N, NZ, lda, lwork, lrwork, liwork, istat, info
+      integer                                     :: lwork_h, lrwork_h, liwork_h, ldz_h
+      integer                                     :: i, j, k, nb, ib, mi, ldt, ldz, il, iu
+      real(8), dimension(1:lrwork), device        :: rwork
+      real(8), dimension(1:lrwork_h), pinned      :: rwork_h
+      complex(8), dimension(1:lwork), device      :: work
+      complex(8), dimension(1:lwork_h), pinned    :: work_h
+      integer, dimension(1:liwork_h), pinned      :: iwork_h
+
+      complex(8), dimension(1:lda, 1:N), device   :: A
+      complex(8), dimension(1:ldz, 1:N), device   :: Z
+      complex(8), dimension(1:ldz_h, 1:N), pinned :: Z_h
+      real(8), dimension(1:N), device             :: w
+      real(8), dimension(1:N), pinned             :: w_h
+
+      integer                                     :: inde, indtau, indwrk, indrwk, indwk2, llwork, llrwk
+      complex(8), parameter                       :: cone = cmplx(1,0,8)
+      real(8), parameter                          :: one = 1.0_8
+
+      if (uplo .ne. 'U' .or. jobz .ne. 'V') then
+        print*, "Provided itype/uplo not supported!"
+        return
+      endif
+
+      nb = min(64, N) ! Blocksize for rotation procedure, fixed at 64
+      ldt = nb
+      NZ = iu - il + 1
+
+      inde = 1
+      indtau = 1
+      indwrk = indtau + n
+      indrwk = inde + n
+      indwk2 = indwrk + (nb)*(nb)
+      llwork = lwork - indwrk + 1
+      llrwk = lrwork_h - indrwk + 1
+
+      !JR Note: ADD SCALING HERE IF DESIRED. Not scaling for now.
+
+      ! Call ZHETRD to reduce A to tridiagonal form
+      call nvtxStartRange("zhetrd", 0)
+      call zhetrd_gpu('U', N, A, lda, w, rwork(inde), work(indtau), work(indwrk), llwork, 32) ! nb = 32 for tridiagonalization
+      call nvtxEndRange
+
+      ! Copy diagonal and superdiagonal to CPU
+      w_h(1:N) = w(1:N)
+      rwork_h(inde:inde+N-1) = rwork(inde:inde+N-1)
+
+      ! Call ZSTEDC to get eigenvalues/vectors of tridiagonal A on CPU
+      call nvtxStartRange("zstedc", 1)
+      call zstedc('I', N, w_h, rwork_h(inde), Z_h, ldz_h, work_h, lwork_h, rwork_h(indrwk), llrwk, iwork_h, liwork_h, istat)
+      if (istat /= 0) then
+        write(*,*) "zheevd_gpu error: zstedc failed!"
+        info = -1
+        return
+      endif
+      call nvtxEndRange
+
+      ! Copy eigenvectors and eigenvalues to GPU
+      istat = cudaMemcpy2D(Z(1, 1), ldz, Z_h(1, il), ldz_h, N, NZ)
+      w(1:N) = w_h(1:N)
+
+      ! Call ZUNMTR to rotate eigenvectors to obtain result for original A matrix
+      ! JR Note: Eventual function calls from ZUNMTR called directly here with associated indexing changes
+      call nvtxStartRange("zunmtr", 2)
+
+      istat = cudaEventRecord(event2, stream2)
+
+      k = N-1
+
+      do i = 1, k, nb
+        ib = min(nb, k-i+1)
+        ! Form block reflector T in stream 1
+        call zlarft_gpu(i+ib-1, ib, A(1, 2+i-1), lda, work(indtau + i -1), work(indwrk), ldt)
+
+        mi = i + ib - 1
+        ! Apply reflector to eigenvectors in stream 2
+        call zlarfb_gpu(mi, NZ, ib, A(1,2+i-1), lda, work(indwrk), ldt, Z, ldz, work(indwk2), N)
+      end do
+
+      call nvtxEndRange
+
+    end subroutine zheevd_gpu
+
+    subroutine zlarft_gpu(N, K, V, ldv, tau, T, ldt)
+      use cublas
+      use eigsolve_vars
+      implicit none
+      integer                               :: N, K, ldv, ldt
+      complex(8), dimension(ldv, K), device :: V
+      complex(8), dimension(K), device      :: tau
+      complex(8), dimension(ldt, K), device :: T
+
+      integer                               :: i, j, istat
+      type(dim3)                            :: threads
+
+      istat = cublasSetStream(cuHandle, stream1)
+
+      ! Prepare lower triangular part of block column for zherk call. 
+      ! Requires zeros in lower triangular portion and ones on diagonal.
+      !$cuf kernel do(2) <<<*, *, 0, stream1>>>
+      do j = 1, K
+        do i = N-K + 1, N
+          if (i-N+K == j) then
+            V(i, j) = dcmplx(1, 0)
+          else if (i-N+k > j) then
+            V(i,j) = dcmplx(0, 0)
+          endif
+        end do
+      end do
+
+      istat = cudaEventRecord(event1, stream1)
+      istat = cudaStreamWaitEvent(stream1, event2, 0)
+
+      ! Form preliminary T matrix
+      istat = cublaszherk_v2(cuHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_C, K, N, 1.0_8, V, ldv, 0.0_8, T, ldt)
+
+      ! Finish forming T 
+      threads = dim3(64, 16, 1)
+      call finish_T_block_kernel<<<1, threads, 0, stream1>>>(K, T, ldt, tau)
+
+    end subroutine zlarft_gpu
+
+    subroutine zlarfb_gpu(M, N, K, V, ldv, T, ldt, C, ldc, work, ldwork)
+      use cublas
+      use eigsolve_vars
+      implicit none
+      integer                                  :: M, N, K, ldv, ldt, ldc, ldwork, istat
+      complex(8), dimension(ldv, K), device    :: V
+      complex(8), dimension(ldt, K), device    :: T
+      complex(8), dimension(ldc, N), device    :: C
+      complex(8), dimension(ldwork, K), device :: work
+
+      istat = cublasSetStream(cuHandle, stream2)
+
+      istat = cudaStreamWaitEvent(stream2, event1, 0)
+      istat = cublaszgemm_v2(cuHandle, CUBLAS_OP_C, CUBLAS_OP_N, N, K, M, dcmplx(1,0), C, ldc, v, ldv, dcmplx(0,0), work, ldwork)
+      istat = cudaStreamSynchronize(stream1)
+
+      istat = cublasztrmm_v2(cuHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_C, CUBLAS_DIAG_NON_UNIT, N, K, &
+        dcmplx(1,0), T, ldt, work, ldwork, work, ldwork)
+
+      istat = cudaEventRecord(event2, stream2)
+      istat = cublaszgemm_v2(cuHandle, CUBLAS_OP_N, CUBLAS_OP_C, M, N, K, dcmplx(-1,0), V, ldv, work, ldwork, dcmplx(1,0), c, ldc)
+
+    end subroutine zlarfb_gpu
+
+    attributes(global) subroutine finish_T_block_kernel(N, T, ldt, tau)
+      implicit none
+      integer, value                        :: N, ldt
+      complex(8), dimension(ldt, K), device :: T
+      complex(8), dimension(K), device      :: tau
+      ! T_s contains only lower triangular elements of T in linear array, by row
+      complex(8), dimension(2080), shared   :: T_s 
+      ! (i,j) --> ((i-1)*i/2 + j)
+      #define IJ2TRI(i,j) (ISHFT((i-1)*i,-1) + j)
+
+
+      integer     :: tid, tx, ty, i, j, k, diag
+      complex(8)  :: cv
+
+      tx = threadIdx%x
+      ty = threadIdx%y
+      tid = (threadIdx%y - 1) * blockDim%x + tx ! Linear thread id
+
+      ! Load T into shared memory
+      if (tx <= N) then
+        do j = ty, N, blockDim%y
+          cv = tau(j)
+          if (tx > j) then
+            T_s(IJ2TRI(tx,j)) = -cv*T(tx,j)
+          else if (tx == j) then
+            T_s(IJ2TRI(tx,j)) = cv
+          endif
+        end do
+      end if
+
+      call syncthreads()
+
+      ! Perform column by column update by first thread column
+      do i = N-1, 1, -1
+        if (ty == 1) then
+          if (tx > i .and. tx <= N) then
+            cv = cmplx(0,0)
+            do j = i+1, tx
+                cv = cv + T_s(IJ2TRI(j, i)) * T_s(IJ2TRI(tx, j))
+            end do
+          endif
+          
+        endif
+
+        call syncthreads()
+        if (ty == 1 .and. tx > i .and. tx <= N) then
+          T_s(IJ2TRI(tx, i)) = cv
+        endif
+        call syncthreads()
+
+      end do
+
+      call syncthreads()
+
+
+      ! Write T_s to global
+      if (tx <= N) then
+        do j = ty, N, blockDim%y
+          if (tx >= j) then
+            T(tx,j) = T_s(IJ2TRI(tx,j))
+          endif
+        end do
+      end if
+
+    end subroutine finish_T_block_kernel
+
+end module zheevd_gpu
