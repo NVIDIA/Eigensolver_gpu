@@ -147,7 +147,7 @@ module zhegvdx_gpu
       ! Compute cholesky factorization of B
       call nvtxStartRange("cusolverdnZpotrf", 0)
       istat = cusolverDnZpotrf(cusolverHandle, CUBLAS_FILL_MODE_UPPER, N, B, ldb, work, lwork, devInfo_d)
-      istat=devInfo_d
+      istat = devInfo_d
       call nvtxEndRange
       if (istat .ne. 0) then
         print*, "zhegvdx_gpu error: cusolverDnZpotrf failed!"
@@ -172,7 +172,12 @@ module zhegvdx_gpu
       call nvtxEndRange
 
       ! Copy final eigenvectors to host
-      Z_h(:, 1:m) = Z(:, 1:m)
+      istat = cudaMemcpy2D(Z_h, ldz_h, Z, ldz, N, m)
+      if (istat .ne. 0) then
+        print*, "zhegvdx_gpu error: cudaMemcpy2D failed!"
+        info = -1
+        return
+      endif
 
     end subroutine zhegvdx_gpu
 
