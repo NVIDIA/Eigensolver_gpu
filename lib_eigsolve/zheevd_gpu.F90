@@ -38,7 +38,7 @@ module zheevd_gpu
       character                                   :: uplo, jobz
       integer                                     :: N, NZ, lda, lwork, lrwork, liwork, istat, info
       integer                                     :: lwork_h, lrwork_h, liwork_h, ldz_h
-      integer                                     :: i, j, k, nb, ib, mi, ldt, ldz, il, iu
+      integer                                     :: i, j, k, nb, ib, mi, ldt, ldz, il, iu, lnb
       real(8), dimension(1:lrwork), device        :: rwork
       real(8), dimension(1:lrwork_h), pinned      :: rwork_h
       complex(8), dimension(1:lwork), device      :: work
@@ -76,7 +76,8 @@ module zheevd_gpu
 
       ! Call ZHETRD to reduce A to tridiagonal form
       call nvtxStartRange("zhetrd", 0)
-      call zhetrd_gpu('U', N, A, lda, w, rwork(inde), work(indtau), work(indwrk), llwork, 32) ! nb = 32 for tridiagonalization
+      lnb=32  !workaround for LLVM bug on Power
+      call zhetrd_gpu('U', N, A, lda, w, rwork(inde), work(indtau), work(indwrk), llwork, lnb) ! nb = 32 for tridiagonalization
       call nvtxEndRange
 
       ! Copy diagonal and superdiagonal to CPU
