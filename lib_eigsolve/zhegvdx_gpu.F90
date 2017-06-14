@@ -41,7 +41,7 @@ module zhegvdx_gpu
     !   -  A(lda, N), B(ldb, N) are double-complex matrices on device  with upper triangular portion populated
     !   -  il, iu are integers specifying range of eigenvalues/vectors to compute. Range is [il, iu]
     !   -  work is a double-complex array for complex workspace of length lwork. 
-    !   -  lwork is an integer specifying length of work. lwork >= max(35 * N, 64*64 + 65*N)
+    !   -  lwork is an integer specifying length of work. lwork >=  2*64*64 + 65*N
     !   -  rwork is a real(8) array for real workspace of length lrwork. 
     !   -  lrwork is an integer specifying length of rwork. lrwork >= N
     !
@@ -55,8 +55,8 @@ module zhegvdx_gpu
     !
     ! Output:
     ! On device:
-    !   - A(lda, N), B(ldb, N) are modified on exit. The upper triangular part of A is destroyed. B is overwritten
-    !     by the triangular Cholesky factor U corresponding to  B = U**H * U
+    !   - A(lda, N), B(ldb, N) are modified on exit. The upper triangular part of A, including the diagonal is destroyed. 
+    !     B is overwritten by the triangular Cholesky factor U corresponding to  B = U**H * U
     !   - Z(ldz, iu - il + 1) is a double-complex matrix on the device. On exit, the first iu - il + 1 columns of Z
     !     contains normalized eigenvectors corresponding to eigenvalues in the range [il, iu].
     !   - w(iu - il + 1) is a real(8) array on the device. On exit, the first iu - il + 1 values of w contain the computed
@@ -77,7 +77,7 @@ module zhegvdx_gpu
       use zhegst_gpu
       use zheevd_gpu
       implicit none
-      integer                                     :: N, m, lda, ldb, ldz, il, iu, ldz_h, info
+      integer                                     :: N, m, lda, ldb, ldz, il, iu, ldz_h, info, nb
       integer                                     :: lwork_h, lrwork_h, liwork_h, lwork, lrwork, liwork, istat
       real(8), dimension(1:lrwork), device        :: rwork
       real(8), dimension(1:lrwork_h), pinned      :: rwork_h
@@ -93,12 +93,13 @@ module zhegvdx_gpu
       real(8), dimension(1:N), pinned             :: w_h
 
       complex(8), parameter :: cone = cmplx(1,0,8)
+      integer :: i, j
 
       info = 0
 
       ! Check workspace sizes
-      if (lwork < max(35 * N, 64*64 + 65*N)) then
-        print*, "zhegvdx_gpu error: lwork must be at least max(35 * N, 64*64 + 65*N)"
+      if (lwork < 2*64*64 + 65*N) then
+        print*, "zhegvdx_gpu error: lwork must be at least 2*64*64 + 65*N"
         info = -1
         return
       else if (lrwork < N) then
@@ -134,9 +135,21 @@ module zhegvdx_gpu
         return
       endif
 
+      ! Store lower triangular part of A in Z
+      !$cuf kernel do(2) <<<*,*, 0, stream1>>>
+      do j = 1,N
+        do i = 1,N
+          if (i > j) then
+            Z(i,j) = A(i,j)
+          endif
+        end do
+      end do
+
+
       ! Reduce to standard eigenproblem
+      nb = 448
       call nvtxStartRange("zhegst_gpu", 1)
-      call zhegst_gpu(1, 'U', N, A, lda, B, ldb, 448)
+      call zhegst_gpu(1, 'U', N, A, lda, B, ldb, nb)
       call nvtxEndRange
 
       ! Tridiagonalize and compute eigenvalues/vectors

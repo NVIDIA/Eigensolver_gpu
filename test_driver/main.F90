@@ -254,7 +254,7 @@ program main
   allocate(work(lwork), rwork(lrwork), iwork(liwork))
 
   deallocate(work_d)
-  lwork_d = max(35 * N, 64*64 + 65 * N)
+  lwork_d = 2*64*64 + 65 * N
   lrwork_d = N
   allocate(work_d(1*lwork_d))
   allocate(rwork_d(1*lrwork_d))

@@ -38,7 +38,7 @@ module zheevd_gpu
       character                                   :: uplo, jobz
       integer                                     :: N, NZ, lda, lwork, lrwork, liwork, istat, info
       integer                                     :: lwork_h, lrwork_h, liwork_h, ldz_h
-      integer                                     :: i, j, k, nb, ib, mi, ldt, ldz, il, iu, lnb
+      integer                                     :: i, j, k, nb1, nb2, ib, mi, ldt, ldz, il, iu
       real(8), dimension(1:lrwork), device        :: rwork
       real(8), dimension(1:lrwork_h), pinned      :: rwork_h
       complex(8), dimension(1:lwork), device      :: work
@@ -51,7 +51,7 @@ module zheevd_gpu
       real(8), dimension(1:N), device             :: w
       real(8), dimension(1:N), pinned             :: w_h
 
-      integer                                     :: inde, indtau, indwrk, indrwk, indwk2, llwork, llrwk
+      integer                                     :: inde, indtau, indwrk, indrwk, indwk2, indwk3, llwork, llrwk
       complex(8), parameter                       :: cone = cmplx(1,0,8)
       real(8), parameter                          :: one = 1.0_8
 
@@ -60,15 +60,17 @@ module zheevd_gpu
         return
       endif
 
-      nb = min(64, N) ! Blocksize for rotation procedure, fixed at 64
-      ldt = nb
+      nb1 = 32 ! Blocksize for tridiagonalization
+      nb2 = min(64, N) ! Blocksize for rotation procedure, fixed at 64
+      ldt = nb2
       NZ = iu - il + 1
 
       inde = 1
       indtau = 1
       indwrk = indtau + n
       indrwk = inde + n
-      indwk2 = indwrk + (nb)*(nb)
+      indwk2 = indwrk + (nb2)*(nb2)
+      indwk3 = indwk2 + (nb2)*(nb2)
       llwork = lwork - indwrk + 1
       llrwk = lrwork_h - indrwk + 1
 
@@ -76,13 +78,23 @@ module zheevd_gpu
 
       ! Call ZHETRD to reduce A to tridiagonal form
       call nvtxStartRange("zhetrd", 0)
-      lnb=32  !workaround for LLVM bug on Power
-      call zhetrd_gpu('U', N, A, lda, w, rwork(inde), work(indtau), work(indwrk), llwork, lnb) ! nb = 32 for tridiagonalization
+      call zhetrd_gpu('U', N, A, lda, w, rwork(inde), work(indtau), work(indwrk), llwork, nb1)
       call nvtxEndRange
 
       ! Copy diagonal and superdiagonal to CPU
       w_h(1:N) = w(1:N)
       rwork_h(inde:inde+N-1) = rwork(inde:inde+N-1)
+
+      ! Restore lower triangular of A (works if called from zhegvd only!)
+      !$cuf kernel do(2) <<<*,*>>>
+      do j = 1,N
+        do i = 1,N
+          if (i > j) then
+            A(i,j) = Z(i,j)
+          endif
+        end do
+      end do
+
 
       ! Call ZSTEDC to get eigenvalues/vectors of tridiagonal A on CPU
       call nvtxStartRange("zstedc", 1)
@@ -106,28 +118,30 @@ module zheevd_gpu
 
       k = N-1
 
-      do i = 1, k, nb
-        ib = min(nb, k-i+1)
+      do i = 1, k, nb2
+        ib = min(nb2, k-i+1)
+
         ! Form block reflector T in stream 1
-        call zlarft_gpu(i+ib-1, ib, A(1, 2+i-1), lda, work(indtau + i -1), work(indwrk), ldt)
+        call zlarft_gpu(i+ib-1, ib, A(1, 2+i-1), lda, work(indtau + i -1), work(indwrk), ldt, work(indwk2), ldt)
 
         mi = i + ib - 1
         ! Apply reflector to eigenvectors in stream 2
-        call zlarfb_gpu(mi, NZ, ib, A(1,2+i-1), lda, work(indwrk), ldt, Z, ldz, work(indwk2), N)
+        call zlarfb_gpu(mi, NZ, ib, A(1,2+i-1), lda, work(indwrk), ldt, Z, ldz, work(indwk3), N, work(indwk2), ldt)
       end do
 
       call nvtxEndRange
 
     end subroutine zheevd_gpu
 
-    subroutine zlarft_gpu(N, K, V, ldv, tau, T, ldt)
+    subroutine zlarft_gpu(N, K, V, ldv, tau, T, ldt, W, ldw)
       use cublas
       use eigsolve_vars
       implicit none
-      integer                               :: N, K, ldv, ldt
+      integer                               :: N, K, ldv, ldt, ldw
       complex(8), dimension(ldv, K), device :: V
       complex(8), dimension(K), device      :: tau
       complex(8), dimension(ldt, K), device :: T
+      complex(8), dimension(ldw, K), device :: W
 
       integer                               :: i, j, istat
       type(dim3)                            :: threads
@@ -136,12 +150,14 @@ module zheevd_gpu
 
       ! Prepare lower triangular part of block column for zherk call. 
       ! Requires zeros in lower triangular portion and ones on diagonal.
+      ! Store existing entries (excluding diagonal) in W
       !$cuf kernel do(2) <<<*, *, 0, stream1>>>
       do j = 1, K
         do i = N-K + 1, N
           if (i-N+K == j) then
             V(i, j) = dcmplx(1, 0)
           else if (i-N+k > j) then
+            W(i-N+k,j) = V(i,j)
             V(i,j) = dcmplx(0, 0)
           endif
         end do
@@ -159,13 +175,15 @@ module zheevd_gpu
 
     end subroutine zlarft_gpu
 
-    subroutine zlarfb_gpu(M, N, K, V, ldv, T, ldt, C, ldc, work, ldwork)
+    subroutine zlarfb_gpu(M, N, K, V, ldv, T, ldt, C, ldc, work, ldwork, W, ldw)
       use cublas
       use eigsolve_vars
       implicit none
-      integer                                  :: M, N, K, ldv, ldt, ldc, ldwork, istat
+      integer                                  :: M, N, K, ldv, ldt, ldc, ldw, ldwork, istat
+      integer                                  :: i, j
       complex(8), dimension(ldv, K), device    :: V
       complex(8), dimension(ldt, K), device    :: T
+      complex(8), dimension(ldw, K), device    :: W
       complex(8), dimension(ldc, N), device    :: C
       complex(8), dimension(ldwork, K), device :: work
 
@@ -175,11 +193,22 @@ module zheevd_gpu
       istat = cublaszgemm_v2(cuHandle, CUBLAS_OP_C, CUBLAS_OP_N, N, K, M, dcmplx(1,0), C, ldc, v, ldv, dcmplx(0,0), work, ldwork)
       istat = cudaStreamSynchronize(stream1)
 
+
       istat = cublasztrmm_v2(cuHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_C, CUBLAS_DIAG_NON_UNIT, N, K, &
         dcmplx(1,0), T, ldt, work, ldwork, work, ldwork)
 
       istat = cudaEventRecord(event2, stream2)
-      istat = cublaszgemm_v2(cuHandle, CUBLAS_OP_N, CUBLAS_OP_C, M, N, K, dcmplx(-1,0), V, ldv, work, ldwork, dcmplx(1,0), c, ldc)
+      istat = cublaszgemm_v2(cuHandle, CUBLAS_OP_N, CUBLAS_OP_C, M, N, K, dcmplx(-1,0), V, ldv, work, ldwork, dcmplx(1,0), C, ldc)
+
+      ! Restore clobbered section of block column (except diagonal)
+      !$cuf kernel do(2) <<<*, *>>>
+      do j = 1, K
+        do i = M-K + 1, M
+          if (i-M+k > j) then
+            V(i,j) = W(i-M+k,j)
+          endif
+        end do
+      end do
 
     end subroutine zlarfb_gpu
 
