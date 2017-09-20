@@ -25,8 +25,9 @@ module compare_utils
 
   interface compare
     module procedure compare_real_1d_cpu
-    ! Note: compare_complex_2d_cpu compares absolute values in order to deal with
+    ! Note: compare_real/complex_2d_cpu compares absolute values in order to deal with
     !       eigenvectors which may differ only by sign
+    module procedure compare_real_2d_cpu
     module procedure compare_complex_2d_cpu
   end interface compare
 
@@ -75,6 +76,55 @@ module compare_utils
   deallocate(A1, A2)
 
   end subroutine compare_real_1d_cpu
+
+  subroutine compare_real_2d_cpu(A1_h,A2_h,N, M)
+    implicit none
+    real(8), dimension(:,:) :: A1_h, A2_h
+    real(8), dimension(:,:), allocatable :: A1, A2
+    real(8) :: maxerr,perr,l2normerr,norm,buf
+    integer :: i,j,k,imax,jmax,kmax,N,M
+    character (len=4) :: itcount
+    character (len=1) :: proc
+
+    allocate(A1, source = A1_h)
+    allocate(A2, source = A2_h)
+
+    l2normerr = 0.d0
+    norm = 0.d0
+    maxerr = 0.d0
+    imax=1
+    jmax=1
+    kmax=1
+    do j=1, M
+      do i=1, N
+        if(abs(A1(i,j)) >= 1e-10) then
+          perr = abs(abs(A1(i,j)) - abs(A2(i,j)))/abs(A1(i,j))*100.d0
+          norm = norm + abs(A1(i,j)*A1(i,j));
+          l2normerr = l2normerr + abs((abs(A1(i,j)) - abs(A2(i,j)))*(abs(A1(i,j)) - abs(A2(i,j))))
+        else
+          perr = 0.d0
+        endif
+        if(perr>maxerr .and. A1(i,j)/=0.0d0 .and. A2(i,j)/=0.0d0) then
+          maxerr = perr
+          imax = i
+          jmax = j
+        endif
+      enddo
+   enddo
+
+  norm = sqrt(norm)
+  l2normerr = sqrt(l2normerr)
+  if(l2normerr /= 0.d0) then
+    l2normerr = l2normerr/norm
+    write(*,"(A16,2X,ES10.3,A12,ES10.3,A6,I5,I5,A6,2X,E20.14,1X,2X,A6,2X,E20.14,1X)") &
+    "l2norm error",l2normerr,"max error",maxerr,"% at",imax,jmax,"cpu=",REAL(A1(imax,jmax)),"gpu=",REAL(A2(imax,jmax))
+  else
+    write(*,"(A16)") "EXACT MATCH"
+  endif
+
+  deallocate(A1, A2)
+
+  end subroutine compare_real_2d_cpu
 
   subroutine compare_complex_2d_cpu(A1_h,A2_h,N, M)
     implicit none

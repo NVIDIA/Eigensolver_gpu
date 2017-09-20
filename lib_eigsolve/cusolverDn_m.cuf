@@ -104,6 +104,21 @@ module cusolverDn
   end interface
 
   interface
+     integer(c_int) function cusolverDnDpotrf_bufferSize( &
+          handle, uplo, n, A, lda, Lwork) &
+          bind(C, name='cusolverDnDpotrf_bufferSize') 
+       use iso_c_binding
+       import cusolverDnHandle
+       type(cusolverDnHandle), value :: handle 
+       integer(c_int), value :: uplo 
+       integer(c_int), value :: n 
+       real(8), device :: A(*) 
+       integer(c_int), value :: lda 
+       integer(c_int) :: Lwork
+     end function cusolverDnDpotrf_bufferSize
+  end interface
+
+  interface
      integer(c_int) function cusolverDnZpotrf( &
           handle, uplo, n, A, lda, Workspace, Lwork, devInfo) &
           bind(C,name='cusolverDnZpotrf') 
@@ -119,6 +134,24 @@ module cusolverDn
        integer(c_int), value :: Lwork
        integer(c_int), device :: devInfo
      end function cusolverDnZpotrf
+  end interface
+
+  interface
+     integer(c_int) function cusolverDnDpotrf( &
+          handle, uplo, n, A, lda, Workspace, Lwork, devInfo) &
+          bind(C,name='cusolverDnDpotrf') 
+       use iso_c_binding
+       import cusolverDnHandle
+       type(cusolverDnHandle), value :: handle 
+       integer(c_int), value :: uplo 
+       integer(c_int), value :: n 
+       real(8), device :: A(*) 
+       integer(c_int), value :: lda 
+       !pgi$ ignore_tkr (r) Workspace
+       real(8), device :: Workspace(*)
+       integer(c_int), value :: Lwork
+       integer(c_int), device :: devInfo
+     end function cusolverDnDpotrf
   end interface
 
   interface
@@ -142,6 +175,26 @@ module cusolverDn
   end interface
 
   interface
+     integer(c_int) function cusolverDnDsygvd_bufferSize( &
+          handle, itype, jobz, uplo, n, A, lda, B, ldb, W, Lwork) &
+          bind(C, name='cusolverDnDsygvd_bufferSize')
+       use iso_c_binding
+       import cusolverDnHandle
+       type(cusolverDnHandle), value :: handle
+       integer(c_int), value :: itype
+       integer(c_int), value :: jobz
+       integer(c_int), value :: uplo
+       integer(c_int), value :: n
+       real(8), device :: A(*)
+       integer(c_int), value :: lda
+       real(8), device :: B(*)
+       integer(c_int), value :: ldb
+       real(8), device :: W(*)
+       integer(c_int) :: Lwork
+     end function cusolverDnDsygvd_bufferSize
+  end interface
+
+  interface
      integer(c_int) function cusolverDnZhegvd( &
           handle, itype, jobz, uplo, n, A, lda, B, ldb, W, Workspace, Lwork, devInfo) &
           bind(C,name='cusolverDnZhegvd')
@@ -162,6 +215,29 @@ module cusolverDn
        integer(c_int), value :: Lwork
        integer(c_int), device :: devInfo
      end function cusolverDnZhegvd
+  end interface
+
+  interface
+     integer(c_int) function cusolverDnDsygvd( &
+          handle, itype, jobz, uplo, n, A, lda, B, ldb, W, Workspace, Lwork, devInfo) &
+          bind(C,name='cusolverDnDsygvd')
+       use iso_c_binding
+       import cusolverDnHandle
+       type(cusolverDnHandle), value :: handle
+       integer(c_int), value :: itype
+       integer(c_int), value :: jobz
+       integer(c_int), value :: uplo
+       integer(c_int), value :: n
+       real(8), device :: A(*)
+       integer(c_int), value :: lda
+       real(8), device :: B(*)
+       integer(c_int), value :: ldb
+       real(8), device :: W(*)
+       !pgi$ ignore_tkr (r) Workspace
+       real(8), device :: Workspace(*)
+       integer(c_int), value :: Lwork
+       integer(c_int), device :: devInfo
+     end function cusolverDnDsygvd
   end interface
 
   interface
