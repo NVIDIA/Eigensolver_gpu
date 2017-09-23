@@ -121,46 +121,48 @@ module zhetrd_gpu
 
       if (N <= 0) return
 
-      do i = N, N-nb+1, -1
+      ! Complete first iteration outside loop
+      if (N > 1) then
+        iw = nb
+        ! Generate elementary reflector H(i) to annihilate A(1:i-2, i)
+        call zlarfg_kernel<<<1, threads>>>(N-1, e(N-1), A(1, N), tau(N-1))
+
+        !$cuf kernel do(1) <<<*,*>>>
+        do k = 1, N-1
+          !W(k,nb+1) = dcmplx(0,0)
+          !W(k,nb+2) = dcmplx(0,0)
+          W(k,iw) = dcmplx(0,0)
+        end do
+
+        blocks2D = dim3(10, ceiling(real(N-1)/32), 1) !JR TODO: What is optimal number of columns for our problem size?
+        call zhemv_gpu<<<blocks2D, threads2D>>>(N-1, A, lda, A(1, N), W(1, iw))
+
+        call finish_W_col_kernel<<<1, threads>>>(N-1, tau(N-1), A(1, N), W(1, iw), W(1, nb+1), W(1, nb+2))
+      endif
+
+      do i = N-1, N-nb+1, -1
         iw = i-N+nb
 
-        if (i < N) then
-          blocks = ceiling(real(i)/threads)
-          call zher2_mv_kernel<<<blocks, threads>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw))
-        end if
+        blocks = ceiling(real(i)/threads)
+        call zher2_mv_kernel<<<blocks, threads>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw))
 
         if (i > 1) then
           ! Generate elementary reflector H(i) to annihilate A(1:i-2, i)
           call zlarfg_kernel<<<1, threads>>>(i-1, e(i-1), A(1, i), tau(i-1))
 
-          if (i < N) then
-            istat = cublasSetStream(cuHandle, stream2)
-            istat = cublaszgemv_v2(cuHandle, CUBLAS_OP_C, i-1, n-i, cone, W(1, iw+1), ldw, A(1, i), 1, czero, W(i+1, iw+1), 1)
-            istat = cublaszgemv_v2(cuHandle, CUBLAS_OP_N, i-1, n-i, -cone, A(1, i+1), lda, W(i+1, iw+1), 1, czero, W(1, nb+1), 1)
-            istat = cublasSetStream(cuHandle, stream3)
-            istat =  cublaszgemv_v2(cuHandle, CUBLAS_OP_C, i-1, n-i, cone, A(1, i+1), lda, A(1, i), 1, czero, W(i+1, iw), 1)
-            istat = cublaszgemv_v2(cuHandle, CUBLAS_OP_N, i-1, n-i, -cone, W(1, iw+1), ldw, W(i+1, iw), 1, czero, W(1, nb+2), 1)
-            istat = cublasSetStream(cuHandle, stream1)
-          else
-            !$cuf kernel do(1) <<<*,*,0,stream2>>>
-            do k = 1, i-1
-              W(k,nb+1) = dcmplx(0,0)
-              W(k,nb+2) = dcmplx(0,0)
-            end do
-          endif
-
-
-          !Need to zero out vector in W if zher2_mv_kernel was not called previously
-          if (i == N) then
-            !$cuf kernel do(1) <<<*,*,0,stream1>>>
-            do k = 1, i-1
-              W(k,iw) = dcmplx(0,0)
-            end do
-          endif
-
           blocks2D = dim3(10, ceiling(real(i-1)/32), 1) !JR TODO: What is optimal number of columns for our problem size?
-          call zhemv_gpu<<<blocks2D, threads2D, 0, stream1>>>(i-1, A, lda, A(1, i), W(1, iw))
+          call zhemv_gpu<<<blocks2D, threads2D>>>(i-1, A, lda, A(1, i), W(1, iw))
 
+          ! TODO: Can eventually zero this out in a different kernel
+          !$cuf kernel do(1) <<<*, *>>>
+          do k = 1, n-i
+            W(i+k, iw) = dcmplx(0,0)
+            W(i+k, iw+1) = dcmplx(0,0)
+          end do
+
+          blocks2D = dim3(ceiling(real(i-1)/32), ceiling(real(2*(n-i))/8), 1)
+          call stacked_zgemv_C<<<blocks2D, threads2D>>>(n-i, i-1, A(1,i+1), lda, W(1, iw+1), ldw, A(1,i), W(i+1, iw), W(i+1, iw+1))
+          call stacked_zgemv_N<<<blocks2D, threads2D>>>(i-1, n-i, A(1,i+1), lda, W(1, iw+1), ldw, W(i+1,iw), W(i+1, iw+1), W(1, iw))
 
           call finish_W_col_kernel<<<1, threads>>>(i-1, tau(i-1), A(1, i), W(1, iw), W(1, nb+1), W(1, nb+2))
 
@@ -318,6 +320,153 @@ module zhetrd_gpu
 
     end subroutine zlarfg_kernel
 
+    attributes(global) subroutine stacked_zgemv_C(M, N, V, ldv, W, ldw, x, z1, z2)
+      use cudafor
+      implicit none
+      integer, value                                     :: M, N, ldv, ldw
+      complex(8), dimension(ldv, M), device, intent(in)  :: V
+      complex(8), dimension(ldw, M), device, intent(in)  :: W
+      complex(8), dimension(N), device, intent(in)       :: x
+      !DIR$ IGNORE_TKR z1, z2
+      real(8), dimension(2*M), device                    :: z1, z2
+      !complex(8), dimension(M), device, intent(in)        :: z1, z2
+
+      !real(8), dimension(32), shared                     :: r_s
+      !real(8), dimension(32), shared                     :: i_s
+
+      integer :: i, j, tx, ty, istat
+      complex(8) :: val
+      real(8) :: rv1, rv2, iv1, iv2, xr, xi
+
+      tx = threadIdx%x
+      ty = threadIdx%y
+
+      i = (blockIdx%y - 1) * blockDim%y + ty 
+      j = (blockIdx%x - 1) * blockDim%x + tx
+
+      !if (i > 2*M .or. j > N) return
+      if (i > 2*M) return
+
+      val = x(j)
+      xr = dble(val); xi = dimag(val)
+
+      if (j > N) then
+        !val = dcmplx(0,0)
+        rv1 = 0.d0; iv1 = 0.d0
+      else
+        if (i > M) then
+          val = W(j, i-M)
+        else
+          val = V(j, i)
+        endif
+
+        rv2 = dble(val); iv2 = dimag(val)
+
+        rv1 = rv2 * xr + iv2 * xi
+        iv1 = rv2 * xi - iv2 * xr
+      endif
+
+      !Partial sum within warps using shuffle
+      rv2 = __shfl_down(rv1,1)
+      rv1 = rv1 + rv2
+      rv2 = __shfl_down(rv1,2)
+      rv1 = rv1 + rv2
+      rv2 = __shfl_down(rv1,4)
+      rv1 = rv1 + rv2
+      rv2 = __shfl_down(rv1,8)
+      rv1 = rv1 + rv2
+      rv2 = __shfl_down(rv1,16)
+      rv1 = rv1 + rv2
+
+      !if (tx == 1) then
+        !r_s(ty + k*blockDim%y) = rv1
+        !r_s(ty) = rv1
+      !endif
+
+      !Partial sum within warps using shuffle
+      iv2 = __shfl_down(iv1,1)
+      iv1 = iv1 + iv2
+      iv2 = __shfl_down(iv1,2)
+      iv1 = iv1 + iv2
+      iv2 = __shfl_down(iv1,4)
+      iv1 = iv1 + iv2
+      iv2 = __shfl_down(iv1,8)
+      iv1 = iv1 + iv2
+      iv2 = __shfl_down(iv1,16)
+      iv1 = iv1 + iv2
+
+      !if (tx == 1) then
+        !i_s(ty + k*blockDim%y) = iv1
+        !i_s(ty) = iv1
+      !endif
+
+      !call syncthreads()
+
+      !if (ty == 1 .and. i+tx-1 <= 2*M) then
+      !  if (i+tx-1 > M) then
+      !    istat = atomicadd(z2(2*(i+tx-1-M) - 1), r_s(tx))
+      !    istat = atomicadd(z2(2*(i+tx-1-M)), i_s(tx))
+      !  else
+      !    istat = atomicadd(z1(2*(i+tx-1) - 1), r_s(tx))
+      !    istat = atomicadd(z1(2*(i+tx-1)), i_s(tx))
+      !  endif
+      !endif
+
+      if (tx == 1) then
+        if (i > M) then
+          istat = atomicadd(z2(2*(i-M) - 1), rv1)
+          istat = atomicadd(z2(2*(i-M)), iv1)
+        else
+          istat = atomicadd(z1(2*i - 1), rv1)
+          istat = atomicadd(z1(2*i), iv1)
+        endif
+      endif
+
+      return
+    end subroutine stacked_zgemv_C
+
+    attributes(global) subroutine stacked_zgemv_N(M, N, V, ldv, W, ldw, z1, z2, y)
+      use cudafor
+      implicit none
+      integer, value                                     :: M, N, ldv, ldw
+      complex(8), dimension(ldv, N), device, intent(in)  :: V
+      complex(8), dimension(ldw, N), device, intent(in)  :: W
+      complex(8), dimension(N), device, intent(in)       :: z1, z2
+      !DIR$ IGNORE_TKR y
+      real(8), dimension(2*M), device                    :: y
+
+      integer :: i, j, tx, ty, istat
+      complex(8) :: val1, val2
+      real(8) :: rv1, rv2, iv1, iv2, xr, xi
+
+      tx = threadIdx%x
+      ty = threadIdx%y
+
+      i = (blockIdx%x - 1) * blockDim%x + tx
+      j = (blockIdx%y - 1) * blockDim%y + ty
+
+      if (i > M .or. j > 2*N) return
+
+      if (j > N) then
+        val1 = z2(j-N)
+        val2 = V(i, j-N)
+      else
+        val1 = z1(j)
+        val2 = W(i, j)
+      endif
+      xr = dble(val1); xi = dimag(val1)
+      rv2 = dble(val2); iv2 = dimag(val2)
+
+      rv1 = -rv2 * xr + iv2 * xi
+      iv1 = -rv2 * xi - iv2 * xr
+
+      istat = atomicadd(y(2*i-1), rv1)
+      istat = atomicadd(y(2*i), iv1)
+
+      return
+
+    end subroutine stacked_zgemv_N
+
     attributes(global) subroutine finish_W_col_kernel(N, tau, x, y, y1, y2)
       implicit none
       integer, value                               :: N
@@ -352,7 +501,8 @@ module zhetrd_gpu
 
         ! All threads perform their product, zero if out of bounds
         if (i <= N) then
-          cv1 = tau*(y(i) + y1(i) + y2(i)) ! Add/scale intermediate results from previous calls
+          !cv1 = tau*(y(i) + y1(i) + y2(i)) ! Add/scale intermediate results from previous calls
+          cv1 = tau * y(i) ! Add/scale intermediate results from previous calls
           val = dconjg(cv1) * x(i)
           y(i) = cv1
         else
