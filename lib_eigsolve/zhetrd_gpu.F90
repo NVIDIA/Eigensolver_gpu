@@ -25,6 +25,7 @@ module zhetrd_gpu
   use cudafor
   use cublas
   use zhemv_gpu
+  use zhetd2_gpu
 
   contains
   
@@ -129,8 +130,6 @@ module zhetrd_gpu
 
         !$cuf kernel do(1) <<<*,*>>>
         do k = 1, N-1
-          !W(k,nb+1) = dcmplx(0,0)
-          !W(k,nb+2) = dcmplx(0,0)
           W(k,iw) = dcmplx(0,0)
         end do
 
@@ -143,22 +142,15 @@ module zhetrd_gpu
       do i = N-1, N-nb+1, -1
         iw = i-N+nb
 
-        blocks = ceiling(real(i)/threads)
-        call zher2_mv_kernel<<<blocks, threads>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw))
+        blocks2D = dim3(ceiling(real(i)/32), ceiling(real(N-i)/8), 1)
+        call zher2_mv_kernel<<<blocks2D, threads2D>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw), ldw)
 
         if (i > 1) then
           ! Generate elementary reflector H(i) to annihilate A(1:i-2, i)
           call zlarfg_kernel<<<1, threads>>>(i-1, e(i-1), A(1, i), tau(i-1))
 
-          blocks2D = dim3(10, ceiling(real(i-1)/32), 1) !JR TODO: What is optimal number of columns for our problem size?
+          blocks2D = dim3(min(10, ceiling(real(i-1)/32)), ceiling(real(i-1)/32), 1) !JR TODO: What is optimal number of columns for our problem size?
           call zhemv_gpu<<<blocks2D, threads2D>>>(i-1, A, lda, A(1, i), W(1, iw))
-
-          ! TODO: Can eventually zero this out in a different kernel
-          !$cuf kernel do(1) <<<*, *>>>
-          do k = 1, n-i
-            W(i+k, iw) = dcmplx(0,0)
-            W(i+k, iw+1) = dcmplx(0,0)
-          end do
 
           blocks2D = dim3(ceiling(real(i-1)/32), ceiling(real(2*(n-i))/8), 1)
           call stacked_zgemv_C<<<blocks2D, threads2D>>>(n-i, i-1, A(1,i+1), lda, W(1, iw+1), ldw, A(1,i), W(i+1, iw), W(i+1, iw+1))
@@ -170,35 +162,46 @@ module zhetrd_gpu
       end do
     end subroutine zlatrd_gpu
 
-    attributes(global) subroutine zher2_mv_kernel(N, M, V, ldv, W, ldw, x, y)
+    attributes(global) subroutine zher2_mv_kernel(N, M, V, ldv, W, ldw, x, W2, ldw2)
       implicit none
-      integer, value                                        :: N, M, ldv, ldw
+      integer, value                                        :: N, M, ldv, ldw, ldw2
       complex(8), dimension(1:ldv, 1:M), device, intent(in) :: V
       complex(8), dimension(1:ldw, 1:M), device, intent(in) :: W
-      complex(8), dimension(1:N), device                    :: x, y
+      complex(8), dimension(1:ldw, 2), device               :: W2
+      !DIR$ IGNORE_TKR x
+      real(8), dimension(1:2*N), device                     :: x
 
-      integer                                               ::  i, j
+      integer                                               :: i, j, istat
       complex(8)                                            :: val
+      real(8)                                               :: rv, iv
 
       i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+      j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
 
-      if (i > N) return
+      if (i > N .or. j > M) return
 
-      ! Put x in registers, preserving real diagonal
-      val = x(i)
-      if (i == N) val = dble(val)
+      val = - conjg(W(N, j)) * V(i,j) - conjg(V(N, j)) * W(i,j)
+      rv = dble(val)
+      iv = dimag(val)
 
-      ! Perform x -= V * W(end,:)^H - W * V(end,:)^H
-      do j = 1, M
-        val = val - conjg(W(N, j)) * V(i,j) - conjg(V(N, j)) * W(i,j)
-      end do
+      ! Zero out imaginary part on diagonal
+      if (i == N) then
+        iv = 0.d0
+      endif
 
-      ! Write x to global mem, preserving real diagonal
-      if (i == N) val = dble(val)
-      x(i) = val
+      ! Update x
+      istat = atomicadd(x(2*i -1), rv)
+      istat = atomicadd(x(2*i), iv)
 
-      ! Zero out column for zhemv call
-      y(i) = 0
+      if (threadIdx%y == 1) then
+        ! Zero out column for zhemv call
+        W2(i, 1) = 0
+        !! Zero out workspace for intermediate zgemv results
+        if (i <= M) then
+          W2(N + i, 1) = 0
+          W2(N + i, 2) = 0
+        endif
+      endif
 
     end subroutine zher2_mv_kernel
 
@@ -567,208 +570,6 @@ module zhetrd_gpu
       end do
 
     end subroutine finish_W_col_kernel
-
-    attributes(global) subroutine zhetd2_gpu(n,a,lda,d,e,tau)
-      use cudafor
-      implicit none
-      integer, value    :: lda
-      complex(8),device :: a(lda,32),tau(32)
-      real(8),device    :: d(32),e(32)
-      complex(8),shared :: a_s(32,32)
-      complex(8),shared :: alpha
-      complex(8),shared :: taui
-      real(8)           :: beta
-      real(8)           :: alphar,alphai
-      real(8)           :: xnorm,x,y,z,w
-      complex(8)        :: wc
-      integer, value    :: n
-      integer           :: tx,ty,tl,i,j,ii
-
-      tx=threadIdx%x
-      ty=threadIdx%y
-      ! Linear id of the thread (tx,ty)
-      tl=tx+ blockDim%x*(ty-1)
-
-      ! Load a_d in shared memory
-      if (tx <= N .and. ty <= N) then
-         a_s(tx           ,ty           )=a(tx           ,ty)
-      endif
-
-       call syncthreads()
-      ! Hermitian matrix from upper triangular
-      if (tx >ty) then
-         a_s(tx,ty)=conjg(a_s(ty,tx))
-      end if
-
-      ! Enforce diagonal element to be real
-      if (tl==1) a_s(n,n)=dble(a_s(n,n))
-
-      call syncthreads()
-
-      ! For each column working backward
-      do i=n-1,1,-1
-        ! Generate elementary reflector
-        ! Sum the vectors above the diagonal, only one warp active
-        ! Reduce in a warp
-        if (tl <=32) then
-          if (tl <i) then
-            w=a_s(tl,i+1)*conjg(a_s(tl,i+1))
-          else 
-            w=0._8
-          endif
-
-           xnorm=__shfl_down(w,1)
-           w=w+xnorm
-           xnorm=__shfl_down(w,2)
-           w=w+xnorm
-           xnorm=__shfl_down(w,4)
-           w=w+xnorm
-           xnorm=__shfl_down(w,8)
-           w=w+xnorm
-           xnorm=__shfl_down(w,16)
-           w=w+xnorm
-        end if
-
-        if(tl==1) then
-          alpha=a_s(i,i+1)
-          alphar=dble(alpha)
-          alphai=dimag(alpha)
-          xnorm=dsqrt(w)
-          
-          if (xnorm .eq. 0_8 .and. alphai .eq. 0._8) then
-          ! H=1
-            taui= 0._8
-            alpha = dcmplx(1.d0, 0.d0) ! To prevent scaling by zscal in this case
-          else
-            !Compute sqrt(alphar^2+alphai^2+xnorm^2) with  dlapy3(alphar,alphai,xnorm)
-            x=abs(alphar)
-            y=abs(alphai)
-            z=abs(xnorm)
-            w=max(x,y,z)
-            beta=-sign(w*sqrt((x/w)**2+(y/w)**2+(z/w)**2),alphar)
-
-            taui=dcmplx( (beta-alphar)/beta, -alphai/beta)
-
-            !zladiv(dcmplx(one),alpha-beta)
-            x= dble(alpha-beta)
-            y=dimag(alpha-beta)
-            if( abs(y) .lt. abs(x) ) then
-              w=y/x
-              z=x+y*w
-              alpha=dcmplx(1/z,-w/z)
-            else
-              w=x/y
-              z=y+x*w
-              alpha=dcmplx(w/z,-1/z)
-            end if
-          end if
-        end if
-
-        call syncthreads()
-
-        ! zscal
-        if (tl<i) then
-          a_s(tl,i+1)=a_s(tl,i+1)*alpha
-        end if
-
-        if (tl==1) then 
-          if (xnorm .ne. 0_8 .or. alphai .ne. 0._8) then
-            alpha=dcmplx(beta,0._8)
-          else
-            alpha=a_s(i,i+1) ! reset alpha to original value
-          endif
-
-          e(i)=alpha
-        end if
-
-        if(taui.ne.(0.d0,0.d0)) then
-          a_s(i,i+1)=dcmplx(1.d0,0.d0)
-          call syncthreads()
-          if(tl<=i) then
-          tau(tl)=dcmplx(0.d0,0.d0)
-          do j=1,i
-            tau(tl)=tau(tl)+taui*a_s(tl,j)*a_s(j,i+1)
-          end do
-        end if
-
-        call syncthreads()
-       
-        if (tl <=32) then
-          if (tl <=i) then
-            wc=taui*conjg(tau(tl))*a_s(tl,i+1)
-            x=-.5d0*dble(wc)
-            y=-.5d0*dimag(wc)
-          else
-            x=0._8
-            y=0._8
-          endif
-
-          z=__shfl_xor(x,1)
-          x=x+z
-          z=__shfl_xor(x,2)
-          x=x+z
-          z=__shfl_xor(x,4)
-          x=x+z
-          z=__shfl_xor(x,8)
-          x=x+z
-          z=__shfl_xor(x,16)
-          x=x+z
-
-          w=__shfl_xor(y,1)
-          y=y+w
-          w=__shfl_xor(y,2)
-          y=y+w
-          w=__shfl_xor(y,4)
-          y=y+w
-          w=__shfl_xor(y,8)
-          y=y+w
-          w=__shfl_xor(y,16)
-          y=y+w
-        end if
-
-       call syncthreads()
-
-       if (tl <=i) then
-         tau(tl)=tau(tl)+dcmplx(x,y)*a_s(tl,i+1)
-       end if
-
-       if( tl==1) alpha=dcmplx(x,y)
-
-        call syncthreads()
-
-        if( tx<=i .and. ty<=i) then
-          a_s(tx,ty)=a_s(tx,ty)-a_s(tx,i+1)*dconjg(tau(ty))-dconjg(a_s(ty,i+1))*tau(tx)
-        end if
-        call syncthreads()
-
-        else
-          if(tl==1)a_s(i,i)=dble(a_s(i,i))
-        endif
-
-        if (tl==1) then
-          a_s(i,i+1)=e(i)
-          d(i+1)=a_s(i+1,i+1)
-          tau(i)=taui
-        end if
-
-        call syncthreads()
-
-      end do
-
-      if (tl==1) then
-        d(1) = a_s(1,1)
-      endif
-
-
-      call syncthreads()
-
-      ! Back to device memory
-      if (tx <= N .and. ty <= N) then
-        a(tx,ty)=a_s(tx,ty)
-      endif
-
-
-    end subroutine zhetd2_gpu
 
 
 end module zhetrd_gpu
