@@ -32,6 +32,7 @@ module eigsolve_vars
   type(cudaEvent)                :: event1, event2, event3
   integer(kind=cuda_stream_kind) :: stream1, stream2, stream3
   integer, device                :: devInfo_d
+  integer, device, allocatable   :: finished(:)
 
   contains
 
@@ -52,6 +53,8 @@ module eigsolve_vars
          istat = cudaEventCreate(event1)
          istat = cudaEventCreate(event2)
          initialized = 1
+         allocate(finished(1))
+         finished(1) = 0
       endif
     end subroutine init_eigsolve_gpu
 
