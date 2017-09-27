@@ -388,6 +388,8 @@ module zhetrd_gpu
         endif
       endif
 
+      call threadfence()
+
       nFinished = 0
       call syncthreads()
       if (tx + ty == 2) nFinished = atomicinc(finished, nBlocks-1)
@@ -790,6 +792,8 @@ module zhetrd_gpu
         istat = atomicadd(y(2*i-1), rv1)
         istat = atomicadd(y(2*i), iv1)
       endif
+
+      call threadfence()
 
       nFinished = 0
       call syncthreads()
