@@ -58,9 +58,9 @@ module zhetrd_gpu
 
       istat = cublasSetStream(cuHandle, stream1)
 
-      kk = N-((N-1) / nb) * nb
+      kk = N-((N-32) / nb) * nb
       k = N+1
-      do i = N-nb+1, kk+1+32, -nb
+      do i = N-nb+1, kk+1, -nb
         ! Reduce columns i:i+nb-1 to tridiagonal form 
         call zlatrd_gpu(uplo, i+nb-1, nb, A, lda, e, tau, work, ldwork)
 
@@ -142,7 +142,7 @@ module zhetrd_gpu
       do i = N-1, N-nb+1, -1
         iw = i-N+nb
 
-        blocks2D = dim3(ceiling(real(i)/32), ceiling(real(N-i)/8), 1)
+        blocks2D = dim3(ceiling(real(max(i, N-i))/32), ceiling(real(N-i)/8), 1)
         !call zher2_mv_kernel<<<blocks2D, threads2D>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw), ldw)
         call zher2_mv_zlarfg_kernel<<<blocks2D, threads2D>>>(i, N-i, A(1, i+1), lda, W(1, iw+1), ldw, A(1, i), W(1, iw), ldw, e(i-1), tau(i-1), A(1, i), finished(1))
 
@@ -180,25 +180,26 @@ module zhetrd_gpu
       i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
       j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
 
-      if (i > N .or. j > M) return
+      if (i <= N .and. j <= M) then
 
-      val = - conjg(W(N, j)) * V(i,j) - conjg(V(N, j)) * W(i,j)
-      rv = dble(val)
-      iv = dimag(val)
+        val = - conjg(W(N, j)) * V(i,j) - conjg(V(N, j)) * W(i,j)
+        rv = dble(val)
+        iv = dimag(val)
 
-      ! Zero out imaginary part on diagonal
-      if (i == N) then
-        iv = 0.d0
+        ! Zero out imaginary part on diagonal
+        if (i == N) then
+          iv = 0.d0
+        endif
+
+        ! Update x
+        istat = atomicadd(x(2*i -1), rv)
+        istat = atomicadd(x(2*i), iv)
       endif
-
-      ! Update x
-      istat = atomicadd(x(2*i -1), rv)
-      istat = atomicadd(x(2*i), iv)
 
       if (threadIdx%y == 1) then
         ! Zero out column for zhemv call
-        W2(i, 1) = 0
-        !! Zero out workspace for intermediate zgemv results
+        if (i <= N) W2(i, 1) = 0
+        ! Zero out workspace for intermediate zgemv results
         if (i <= M) then
           W2(N + i, 1) = 0
           W2(N + i, 2) = 0
@@ -375,15 +376,15 @@ module zhetrd_gpu
         ! Update x
         istat = atomicadd(x(2*i -1), rv)
         istat = atomicadd(x(2*i), iv)
+      endif
 
-        if (ty == 1) then
-          ! Zero out column for zhemv call
-          W2(i, 1) = 0
-          !! Zero out workspace for intermediate zgemv results
-          if (i <= M) then
-            W2(N + i, 1) = 0
-            W2(N + i, 2) = 0
-          endif
+      if (ty == 1) then
+        ! Zero out column for zhemv call
+        if (i <= N) W2(i, 1) = 0
+        ! Zero out workspace for intermediate zgemv results
+        if (i <= M) then
+          W2(N + i, 1) = 0
+          W2(N + i, 2) = 0
         endif
       endif
 
