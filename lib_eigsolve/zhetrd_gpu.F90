@@ -24,13 +24,12 @@
 module zhetrd_gpu
   use cudafor
   use cublas
-  use zhemv_gpu
-  use zhetd2_gpu
 
   contains
   
     subroutine zhetrd_gpu(uplo, N, A, lda, d, e, tau, work, lwork, nb)
       use eigsolve_vars
+      use zhetd2_gpu
       implicit none
       character                                 :: uplo
       integer                                   :: N, lda, lwork, nb, nx, ldwork, istat
@@ -99,6 +98,7 @@ module zhetrd_gpu
 
     subroutine zlatrd_gpu(uplo, N, nb, A, lda, e, tau, W, ldw)
       use eigsolve_vars
+      use zhemv_gpu
       implicit none
       character                                  :: uplo
       integer                                    :: N, nb, lda, ldw, istat
@@ -169,7 +169,7 @@ module zhetrd_gpu
       integer, value                                        :: N, M, ldv, ldw, ldw2
       complex(8), dimension(1:ldv, 1:M), device, intent(in) :: V
       complex(8), dimension(1:ldw, 1:M), device, intent(in) :: W
-      complex(8), dimension(1:ldw, 2), device               :: W2
+      complex(8), dimension(1:ldw2, 2), device               :: W2
       !DIR$ IGNORE_TKR x
       real(8), dimension(1:2*N), device                     :: x
 
@@ -337,7 +337,7 @@ module zhetrd_gpu
       integer, value                                        :: N, M, ldv, ldw, ldw2
       complex(8), dimension(1:ldv, 1:M), device, intent(in) :: V
       complex(8), dimension(1:ldw, 1:M), device, intent(in) :: W
-      complex(8), dimension(1:ldw, 2), device               :: W2
+      complex(8), dimension(1:ldw2, 2), device              :: W2
       !DIR$ IGNORE_TKR x
       real(8), dimension(1:2*N), device                     :: x
       complex(8), dimension(1:N), device                    :: x2
@@ -400,7 +400,7 @@ module zhetrd_gpu
       ! Begin zlarfg work with last block
       if (N == 1) return
 
-      tid = threadIdx%x + (threadIdx%y - 1) * blockDim%x
+      tid = tx + (ty - 1) * blockDim%x
       laneID = iand(tid, 31)
 
       if (tid == 1) then
@@ -747,7 +747,7 @@ module zhetrd_gpu
 
     end subroutine finish_W_col_kernel
 
-    attributes(global) subroutine stacked_zgemv_N_finish_W(M, N, V, ldv, W, ldw, z1, z2, y, tau, x2, y2, finished)
+    attributes(global) subroutine stacked_zgemv_N_finish_W(M, N, V, ldv, W, ldw, z1, z2, y, tau, x, y2, finished)
       use cudafor
       implicit none
       integer, value                                     :: M, N, ldv, ldw
@@ -757,7 +757,7 @@ module zhetrd_gpu
       !DIR$ IGNORE_TKR y
       real(8), dimension(2*M), device                    :: y
       complex(8), device                                 :: tau
-      complex(8), dimension(M), device, intent(in)       :: x2
+      complex(8), dimension(M), device, intent(in)       :: x
       complex(8), dimension(M), device                   :: y2
       integer, device                                    :: finished
 
@@ -824,7 +824,7 @@ module zhetrd_gpu
 
         ! All threads perform their product, zero if out of bounds
         if (i <= M) then
-          val1 = dconjg(mytau * y2(i)) * x2(i)
+          val1 = dconjg(mytau * y2(i)) * x(i)
         else
           val1 = dcmplx(0.,0.)
         endif
@@ -873,7 +873,7 @@ module zhetrd_gpu
       alpha = -dcmplx(0.5, 0.0) * mytau * dcmplx(alphar, alphai)
 
       do i = tid, M, blockDim%x * blockDim%y
-        y2(i) = mytau*y2(i) + alpha * x2(i) !zaxpy
+        y2(i) = mytau*y2(i) + alpha * x(i) !zaxpy
       end do
 
     end subroutine stacked_zgemv_N_finish_W

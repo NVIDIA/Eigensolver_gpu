@@ -13,14 +13,16 @@ FLAGS3 = -O3 -mp -pgf90libs -Mcuda=cc60,cuda8.0,ptxinfo,maxregcount:64,nollvm -M
 all: lib_eigsolve.a
 
 OBJS = cusolverDn_m.o eigsolve_vars.o toolbox.o zhegst_gpu.o zhemv_gpu.o zhetd2_gpu.o zhetrd_gpu.o zheevd_gpu.o zhegvdx_gpu.o \
-       dsygst_gpu.o dsymv_gpu.o dsytrd_gpu.o dsyevd_gpu.o dsygvdx_gpu.o
+       dsygst_gpu.o dsymv_gpu.o dsytd2_gpu.o dsytrd_gpu.o dsyevd_gpu.o dsygvdx_gpu.o
 
 zhetd2_gpu.o : zhetd2_gpu.F90
 	pgf90 -c ${FLAGS3} ${OPTFLAGS}  $*.F90 -o $*.o
 zhetrd_gpu.o : zhetrd_gpu.F90
 	pgf90 -c ${FLAGS2} ${OPTFLAGS}  $*.F90 -o $*.o
-dsytrd_gpu.o : dsytrd_gpu.F90
+dsytd2_gpu.o : dsytd2_gpu.F90
 	pgf90 -c ${FLAGS3} ${OPTFLAGS}  $*.F90 -o $*.o
+dsytrd_gpu.o : dsytrd_gpu.F90
+	pgf90 -c ${FLAGS2} ${OPTFLAGS}  $*.F90 -o $*.o
 %.o: %.cuf
 	pgf90 -c ${FLAGS} ${OPTFLAGS} $*.cuf -o $*.o
 %.o: %.F90
