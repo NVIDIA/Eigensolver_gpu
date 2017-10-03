@@ -2,24 +2,24 @@
 GPU Eigensolver for Quantum ESPRESSO package
 
 ###
-This library implements a generalized eigensolver for hermetian-definite eigenproblems with functionality similar to
-the ZHEGVD/X functions available within LAPACK/MAGMA. This solver has less dependencies on CPU computation 
+This library implements a generalized eigensolver for symmetric/hermetian-definite eigenproblems with functionality similar to
+the DSYGVD/X or ZHEGVD/X functions available within LAPACK/MAGMA. This solver has less dependencies on CPU computation 
 than comparable implementations within MAGMA, which may be of benefit to systems with limited CPU resources or to 
 users without access to high-performing CPU LAPACK libraries. 
 
 ###
 This implementation can be considered as a "proof of concept" and has been written to target the Quantum ESPRESSO
-code. As such, this implementation is built only to handle one problem configuration of ZHEGVD/X. Specifically, this
+code. As such, this implementation is built only to handle one problem configuration of DSYGVD/X or ZHEGVD/X. Specifically, this
 solver computes eigenvalues and associated eigenvectors over a specified integer range for a 
-hermetian-definite eigenproblem in the following form: 
+symmetric/hermetian-definite eigenproblem in the following form: 
 
 	A * x = lambda * B * x
 
-where `A` and `B` are hermetian-matrices and `B` is positive definite. The solver expects the upper-triangular parts of the 
-input `A` and `B` arguments to be populated. This configuration corresponds to calling ZHEGVX within LAPACK with the configuration 
+where `A` and `B` are symmetric/hermetian-matrices and `B` is positive definite. The solver expects the upper-triangular parts of the 
+input `A` and `B` arguments to be populated. This configuration corresponds to calling DSYGVX/ZHEGVX within LAPACK with the configuration 
 arguments `ITYPE = 1`, `JOBZ = 'V'`, `RANGE = 'I'`, and `UPLO = 'U'`. 
 
-See comments within `zhegvdx_gpu.F90` for specific details on usage.
+See comments within `dsygvdx_gpu.F90` or `zhegvdx_gpu.F90` for specific details on usage.
 
 For additional information about the solver with some performance results, see presentation at the following link: (will be added
 once available publically on the GTC On-Demand website)

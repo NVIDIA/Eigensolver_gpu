@@ -52,6 +52,8 @@ module zhegvdx_gpu
     !   -  lrwork_h is an integer specifying length of rwork_h. lrwork_h >= 1 + 5*N + 2*N*N
     !   -  iwork_h is a integer array for integer workspace of length liwork_h. 
     !   -  liwork_h is an integer specifying length of iwork_h. liwork_h >= 3 + 5*N
+    !   -  (optional) _skip_host_copy is an optional logical argument. If .TRUE., memcopy of final updated eigenvectors from 
+    !      device to host will be skipped.
     !
     ! Output:
     ! On device:
@@ -65,13 +67,13 @@ module zhegvdx_gpu
     ! On host:
     !   - Z_h(ldz, iu - il + 1) is a double-complex matrix on the host. On exit, the first iu - il + 1 columns of Z
     !     contains normalized eigenvectors corresponding to eigenvalues in the range [il, iu]. This is a copy of the Z
-    !     matrix on the device
+    !     matrix on the device. This is only true if optional argument _skip_host_copy is not provided or is set to .FALSE.
     !   - w(iu - il + 1) is a real(8) array on the host. On exit, the first iu - il + 1 values of w contain the computed
     !     eigenvalues. This is a copy of the w array on the host.
     !   - info is an integer. info will equal zero if the function completes succesfully. Otherwise, there was an error.
     !
     subroutine zhegvdx_gpu(N, A, lda, B, ldb, Z, ldz, il, iu, w, work, lwork, rwork, lrwork, &
-                          work_h, lwork_h, rwork_h, lrwork_h, iwork_h, liwork_h, Z_h, ldz_h, w_h, info)
+                          work_h, lwork_h, rwork_h, lrwork_h, iwork_h, liwork_h, Z_h, ldz_h, w_h, info, _skip_host_copy)
       use eigsolve_vars
       use nvtx_inters
       use zhegst_gpu
@@ -84,6 +86,7 @@ module zhegvdx_gpu
       complex(8), dimension(1:lwork), device      :: work
       complex(8), dimension(1:lwork_h), pinned    :: work_h
       integer, dimension(1:liwork_h), pinned      :: iwork_h
+      logical, optional                           :: _skip_host_copy
 
       complex(8), dimension(1:lda, 1:N), device   :: A
       complex(8), dimension(1:ldb, 1:N), device   :: B
@@ -94,8 +97,11 @@ module zhegvdx_gpu
 
       complex(8), parameter :: cone = cmplx(1,0,8)
       integer :: i, j
+      logical :: skip_host_copy
 
       info = 0
+      skip_host_copy = .FALSE.
+      if(present(_skip_host_copy)) skip_host_copy = _skip_host_copy
 
       ! Check workspace sizes
       if (lwork < 2*64*64 + 65*N) then
@@ -164,11 +170,13 @@ module zhegvdx_gpu
       call nvtxEndRange
 
       ! Copy final eigenvectors to host
-      istat = cudaMemcpy2D(Z_h, ldz_h, Z, ldz, N, m)
-      if (istat .ne. 0) then
-        print*, "zhegvdx_gpu error: cudaMemcpy2D failed!"
-        info = -1
-        return
+      if (not(skip_host_copy)) then
+        istat = cudaMemcpy2D(Z_h, ldz_h, Z, ldz, N, m)
+        if (istat .ne. 0) then
+          print*, "zhegvdx_gpu error: cudaMemcpy2D failed!"
+          info = -1
+          return
+        endif
       endif
 
     end subroutine zhegvdx_gpu
