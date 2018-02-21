@@ -55,16 +55,16 @@ module dsygvdx_gpu
     ! On device:
     !   - A(lda, N), B(ldb, N) are modified on exit. The upper triangular part of A, including the diagonal is destroyed. 
     !     B is overwritten by the triangular Cholesky factor U corresponding to  B = U**H * U
-    !   - Z(ldz, iu - il + 1) is a real(8) matrix on the device. On exit, the first iu - il + 1 columns of Z
+    !   - Z(ldz, N) is a real(8) matrix on the device. On exit, the first iu - il + 1 columns of Z
     !     contains normalized eigenvectors corresponding to eigenvalues in the range [il, iu].
-    !   - w(iu - il + 1) is a real(8) array on the device. On exit, the first iu - il + 1 values of w contain the computed
+    !   - w(N) is a real(8) array on the device. On exit, the first iu - il + 1 values of w contain the computed
     !     eigenvalues
     !
     ! On host:
-    !   - Z_h(ldz, iu - il + 1) is a real(8) matrix on the host. On exit, the first iu - il + 1 columns of Z
+    !   - Z_h(ldz_h, N) is a real(8) matrix on the host. On exit, the first iu - il + 1 columns of Z
     !     contains normalized eigenvectors corresponding to eigenvalues in the range [il, iu]. This is a copy of the Z
     !     matrix on the device. This is only true if optional argument _skip_host_copy is not provided or is set to .FALSE.
-    !   - w(iu - il + 1) is a real(8) array on the host. On exit, the first iu - il + 1 values of w contain the computed
+    !   - w(N) is a real(8) array on the host. On exit, the first iu - il + 1 values of w contain the computed
     !     eigenvalues. This is a copy of the w array on the host.
     !   - info is an integer. info will equal zero if the function completes succesfully. Otherwise, there was an error.
     !
