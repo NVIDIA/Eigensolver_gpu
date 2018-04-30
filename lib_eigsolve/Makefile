@@ -19,7 +19,7 @@ zhemv_gpu.o : zhemv_gpu.F90
 	pgf90 -c ${FLAGS3} ${OPTFLAGS}  $*.F90 -o $*.o
 dsytd2_gpu.o : dsytd2_gpu.F90
 	pgf90 -c ${FLAGS2} ${OPTFLAGS}  $*.F90 -o $*.o
-dsytd2_gpu.o : dsymv_gpu.F90
+dsymv_gpu.o : dsymv_gpu.F90
 	pgf90 -c ${FLAGS3} ${OPTFLAGS}  $*.F90 -o $*.o
 %.o: %.cuf
 	pgf90 -c ${FLAGS} ${OPTFLAGS} $*.cuf -o $*.o
