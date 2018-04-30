@@ -1,8 +1,7 @@
 CUDAROOT = /usr/local/cuda
 
-# Flags for GPUs with Pascal architecture. 
-# If using Kepler, replace cc60 with cc35 and sm_60 with sm_35
-FLAGS = -O3 -mp -pgf90libs -Mcuda=cc60,cuda8.0,ptxinfo,maxregcount:64, -Mlarge_arrays
+# Flags for GPUs with Volta architecture.  Modify cc value as required.
+FLAGS = -O3 -mp -pgf90libs -Mcuda=cc70,cuda9.1 -Mlarge_arrays
 
 INCS = -I../lib_eigsolve 
 LIBS = -Mcudalib=cublas,cusolver -L${CUDAROOT}/lib64 -lnvToolsExt
