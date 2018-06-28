@@ -30,4 +30,4 @@ lib_eigsolve.a: $(OBJS)
 	ar -cr lib_eigsolve.a $(OBJS)
 
 clean:
-	rm lib_eigsolve.a *.mod *.o
+	rm -f lib_eigsolve.a *.mod *.o
