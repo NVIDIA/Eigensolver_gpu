@@ -64,7 +64,9 @@ module zhemv_gpu
 
 
     i = ii + tx - 1
-    val =  x(i) ! read part of x for lower triangular multiply
+    if (i <= N) then
+      val =  x(i) ! read part of x for lower triangular multiply
+    endif
     xrl = dble(val)
     xil = dimag(val)
 

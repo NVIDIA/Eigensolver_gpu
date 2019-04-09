@@ -57,7 +57,9 @@ module dsymv_gpu
     if (ii + (blockIdx%x-1)*blockDim%x > N) return
 
     i = ii + tx - 1
-    xl =  x(i) ! read part of x for lower triangular multiply
+    if (i <= N) then
+      xl =  x(i) ! read part of x for lower triangular multiply
+    endif
 
     ! Loop over columns (skip all lower triangular blocks)
     do jj = ii + (blockIdx%x-1)*blockDim%x, N, gridDim%x*blockDim%x
