@@ -25,7 +25,7 @@ For additional information about the solver with some performance results, see p
 once available publically on the GTC On-Demand website)
 
 ### Building
-* Compilation of this library requires the PGI compiler version 17.4 or higher.
+* Compilation of this library requires the PGI compiler version 18.10 or higher.
 * Using the provided `Makefile` will generate a static library object `lib_eigsolve.a` which can included in your
 target application. 
 * Library requires linking to cuBLAS and cuSOLVER. Use `-Mcuda=cublas,cusolver` flag when linking your application to do this.
