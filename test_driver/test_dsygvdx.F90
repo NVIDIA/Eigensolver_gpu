@@ -215,10 +215,11 @@ program main
   il = 1
   iu = N
   istat = cusolverDnDsygvdx_bufferSize(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUSOLVER_EIG_RANGE_I, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, 0.D0, 0.D0, il, iu, h_meig, w2_d, lwork_d)
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvdx_buffersize failed'
 #else
   istat = cusolverDnDsygvd_bufferSize(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, w2_d, lwork_d)
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvd_buffersize failed'
 #endif
-  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnZpotrf_buffersize failed'
   allocate(work_d(lwork_d))
   
   A2 = Aref
@@ -244,10 +245,18 @@ program main
   call compare(A1, A2, N, N)
   print*
 
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  print*, "Time for cusolverDnDsygvdx = ", (te - ts)*1000.0
+#else
   print*, "Time for cusolverDnDsygvd = ", (te - ts)*1000.0
+#endif
   print*
   istat = devInfo_d
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvdx failed'
+#else
   if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvd failed'
+#endif
 
 
   ! CASE 4: using CUSTOM ____________________________________________________________________
