@@ -1,5 +1,5 @@
 !
-! Copyright (c) 2016, NVIDIA CORPORATION. All rights reserved.
+! Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 ! 
 ! 
 ! Permission is hereby granted, free of charge, to any person obtaining a
@@ -64,6 +64,12 @@ module funcs
   end subroutine
 end module funcs
 
+! cusovlerDnDsygvdx was added in CUDA 10.1
+! PGI did not expose CUDA_VERSION before version 19.7. This line can be simplified once the support for PGI 19.4 and earlier has been dropped
+#if (((__PGIF90__ < 19 || (__PGIF90__ == 19 && __PGIF90_MINOR__ < 7)) && __CUDA_API_VERSION >= 10010) || ((__PGIF90__ > 19 || (__PGIF90__ == 19 && __PGIF90_MINOR__ >= 7)) && __CUDA_VERSION >= 10010))
+#define HAVE_CUSOLVERDNDSYGVDX
+#endif
+
 program main
   use cudafor
   use cublas
@@ -77,6 +83,9 @@ program main
   
   integer                                         :: N, M, i, j, info, lda, istat
   integer                                         :: lwork_d, lrwork_d, lwork, lrwork, liwork, il, iu
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  integer                                         :: h_meig
+#endif
   character(len=20)                               :: arg
   real(8)                                         :: ts, te, wallclock
   real(8), dimension(:,:), allocatable            :: A1, A2, Aref
@@ -202,8 +211,15 @@ program main
   !print*
   print*, "cuSOLVER_____________________"
 
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  il = 1
+  iu = N
+  istat = cusolverDnDsygvdx_bufferSize(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUSOLVER_EIG_RANGE_I, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, 0.D0, 0.D0, il, iu, h_meig, w2_d, lwork_d)
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvdx_buffersize failed'
+#else
   istat = cusolverDnDsygvd_bufferSize(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, w2_d, lwork_d)
-  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnZpotrf_buffersize failed'
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvd_buffersize failed'
+#endif
   allocate(work_d(lwork_d))
   
   A2 = Aref
@@ -214,7 +230,11 @@ program main
   w2_d = 0
   ts = wallclock()
   call nvtxStartRange("cuSOLVER",5)
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  istat = cusolverDnDsygvdx(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUSOLVER_EIG_RANGE_I, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, 0.D0, 0.D0, il, iu, h_meig, w2_d, work_d, lwork_d, devInfo_d)
+#else
   istat = cusolverDnDsygvd(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, w2_d, work_d, lwork_d, devInfo_d)
+#endif
   call nvtxEndRange
   te = wallclock()
 
@@ -225,10 +245,18 @@ program main
   call compare(A1, A2, N, N)
   print*
 
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  print*, "Time for cusolverDnDsygvdx = ", (te - ts)*1000.0
+#else
   print*, "Time for cusolverDnDsygvd = ", (te - ts)*1000.0
+#endif
   print*
   istat = devInfo_d
+#ifdef HAVE_CUSOLVERDNDSYGVDX
+  if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvdx failed'
+#else
   if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvd failed'
+#endif
 
 
   ! CASE 4: using CUSTOM ____________________________________________________________________
