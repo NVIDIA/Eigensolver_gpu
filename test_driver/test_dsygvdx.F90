@@ -82,11 +82,13 @@ program main
   implicit none
   
   integer                                         :: N, M, i, j, info, lda, istat
+  integer                                         :: n1, n2, m1, m2, lda1, lda2
   integer                                         :: lwork_d, lrwork_d, lwork, lrwork, liwork, il, iu
 #ifdef HAVE_CUSOLVERDNDSYGVDX
   integer                                         :: h_meig
 #endif
   character(len=20)                               :: arg
+  character(:),allocatable                        :: file1,file2
   real(8)                                         :: ts, te, wallclock
   real(8), dimension(:,:), allocatable            :: A1, A2, Aref
   real(8), dimension(:,:), allocatable            :: B1, B2, Bref
@@ -103,7 +105,8 @@ program main
   ! Parse command line arguments
   i = command_argument_count()
 
-  if (i >= 1) then
+
+  if (i == 1) then
     ! If N is provided, generate random symmetric matrices for A and B
     print*, "Using randomly-generated matrices..."
     call get_command_argument(1, arg)
@@ -114,6 +117,29 @@ program main
     call create_random_symmetric_pd(Aref, N)
     call create_random_symmetric_pd(Bref, N)
 
+  elseif (i ==2) then
+    print*, "Reading  matrices from files ..."
+    print*, "Unformatted files with n,m,lda "
+    print*, "A(lda,n) B(lda,n)"
+    call get_command_argument(1, arg)
+    file1=trim(arg)
+    call get_command_argument(2, arg)
+    file2=trim(arg)
+    open(UNIT=13, FILE=file1, ACTION="read", FORM="unformatted")
+    open(UNIT=14, FILE=file2, ACTION="read", FORM="unformatted")
+    read(13) n1,m1,lda1
+    read(14) n2,m2,lda2
+    if( n1/=n2 .or. m1/=m2 .or. lda1 /= lda2) print *,"expecting A and B to have same N,M,LDA"
+    N=n1
+    M=m1
+    LDA=lda1
+    print *,"n,m,lda from files:",n,m,lda
+    allocate(Aref(lda,N))
+    allocate(Bref(lda,N))
+    read(13)Aref(1:n,1:n)
+    read(14)Bref(1:n,1:n)
+    close(13)
+    close(14)
   else
     print*, "Usage:\n\t ./main [N]"
     call exit
@@ -212,8 +238,9 @@ program main
   print*, "cuSOLVER_____________________"
 
 #ifdef HAVE_CUSOLVERDNDSYGVDX
+  print *,"CUSOLVERDNDSYGVDX"
   il = 1
-  iu = N
+  iu = M
   istat = cusolverDnDsygvdx_bufferSize(h, CUSOLVER_EIG_TYPE_1, CUSOLVER_EIG_MODE_VECTOR, CUSOLVER_EIG_RANGE_I, CUBLAS_FILL_MODE_UPPER, N, A2_d, lda, B2_d, lda, 0.D0, 0.D0, il, iu, h_meig, w2_d, lwork_d)
   if (istat /= CUSOLVER_STATUS_SUCCESS) write(*,*) 'cusolverDnDsygvdx_buffersize failed'
 #else
