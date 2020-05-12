@@ -129,7 +129,10 @@ program main
     open(UNIT=14, FILE=file2, ACTION="read", FORM="unformatted")
     read(13) n1,m1,lda1
     read(14) n2,m2,lda2
-    if( n1/=n2 .or. m1/=m2 .or. lda1 /= lda2) print *,"expecting A and B to have same N,M,LDA"
+    if( n1/=n2 .or. m1/=m2 .or. lda1 /= lda2) then
+      print *,"expecting A and B to have same N,M,LDA"
+      call exit
+    end if
     N=n1
     M=m1
     LDA=lda1
@@ -268,8 +271,8 @@ program main
   print*, "evalues/evector accuracy: (compared to CPU results)"
   w2 = w2_d
   A2 = A2_d
-  call compare(w1, w2, N)
-  call compare(A1, A2, N, N)
+  call compare(w1, w2, iu)
+  call compare(A1, A2, N, iu)
   print*
 
 #ifdef HAVE_CUSOLVERDNDSYGVDX
@@ -296,7 +299,7 @@ program main
   B2_d = B2
   w2_d = w2
   il = 1
-  iu = N
+  iu = M
 
   deallocate(work, iwork)
   lwork = 1+6*N+2*N*N
