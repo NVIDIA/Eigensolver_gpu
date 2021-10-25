@@ -2,7 +2,7 @@
 GPU Eigensolver for Quantum ESPRESSO package
 
 ###
-This library implements a generalized eigensolver for symmetric/hermetian-definite eigenproblems with functionality similar to
+This library implements a generalized eigensolver for symmetric/hermitian-definite eigenproblems with functionality similar to
 the DSYGVD/X or ZHEGVD/X functions available within LAPACK/MAGMA. This solver has less dependencies on CPU computation 
 than comparable implementations within MAGMA, which may be of benefit to systems with limited CPU resources or to 
 users without access to high-performing CPU LAPACK libraries. 
@@ -11,11 +11,11 @@ users without access to high-performing CPU LAPACK libraries.
 This implementation can be considered as a "proof of concept" and has been written to target the Quantum ESPRESSO
 code. As such, this implementation is built only to handle one problem configuration of DSYGVD/X or ZHEGVD/X. Specifically, this
 solver computes eigenvalues and associated eigenvectors over a specified integer range for a 
-symmetric/hermetian-definite eigenproblem in the following form: 
+symmetric/hermitian-definite eigenproblem in the following form: 
 
 	A * x = lambda * B * x
 
-where `A` and `B` are symmetric/hermetian-matrices and `B` is positive definite. The solver expects the upper-triangular parts of the 
+where `A` and `B` are symmetric/hermitian-matrices and `B` is positive definite. The solver expects the upper-triangular parts of the 
 input `A` and `B` arguments to be populated. This configuration corresponds to calling DSYGVX/ZHEGVX within LAPACK with the configuration 
 arguments `ITYPE = 1`, `JOBZ = 'V'`, `RANGE = 'I'`, and `UPLO = 'U'`. 
 
